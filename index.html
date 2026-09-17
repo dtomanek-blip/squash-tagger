@@ -1,0 +1,857 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<body>
+<title>Squash Tagger</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1a1a1a; --muted: #6b6b6b;
+    --accent: #1e6f5c; --danger: #b3261e; --border: #e0e0e0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #17181a; --panel: #232427; --text: #f0f0f0; --muted: #9a9a9a;
+      --accent: #4fd1a5; --danger: #ff6b60; --border: #38393c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17181a; --panel: #232427; --text: #f0f0f0; --muted: #9a9a9a;
+    --accent: #4fd1a5; --danger: #ff6b60; --border: #38393c;
+  }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, system-ui, sans-serif; margin: 0; }
+  .view { padding: 12px; max-width: 900px; margin: 0 auto; }
+  .set-boxes { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+  .set-box { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px 16px; display: flex; align-items: center; gap: 12px; }
+  .set-box.current { box-shadow: 0 0 0 2px var(--accent) inset; }
+  .set-box-header { color: var(--muted); font-size: 0.8rem; min-width: 44px; }
+  .set-box-score { flex: 1; font-size: 1.1rem; text-align: center; }
+  .set-box-time { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 44px; text-align: right; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+  button.tag { padding: 16px 8px; border-radius: 10px; border: 1px solid var(--border); background: var(--panel); color: var(--text); font-size: 0.95rem; }
+  .row button.tag { flex: 1; }
+  button.tag.selected { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.tag.negative.selected { background: var(--danger); border-color: var(--danger); }
+  button.serve { width: 100%; padding: 20px; font-size: 1.2rem; border-radius: 12px; background: var(--accent); color: #fff; border: none; margin-bottom: 12px; }
+  button.danger { background: var(--danger); color: #fff; border: none; border-radius: 10px; padding: 10px 16px; }
+  button.secondary { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; min-height: 44px; }
+  .status { background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; cursor: pointer; }
+  .confirm { background: var(--panel); border: 1px solid var(--danger); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+  .row { display: flex; gap: 8px; margin-bottom: 12px; }
+  input, select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); margin-bottom: 8px; }
+  textarea#csvTextArea { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); margin-bottom: 8px; font-family: ui-monospace, monospace; font-size: 0.8rem; }
+  label { color: var(--muted); font-size: 0.85rem; }
+</style>
+
+<div id="setupView" class="view">
+  <h2>New match</h2>
+  <label>Tracked player (P1)</label>
+  <input id="player1Input" type="text" />
+  <label>Opponent (P2)</label>
+  <input id="player2Input" type="text" />
+  <label>Tournament / match</label>
+  <input id="tournamentInput" type="text" />
+  <label>Format</label>
+  <select id="setsToWinInput">
+    <option value="2">Best of 3 (2 to win)</option>
+    <option value="3" selected>Best of 5 (3 to win)</option>
+  </select>
+  <label>Who serves first?</label>
+  <select id="firstServerInput">
+    <option value="P1">P1</option>
+    <option value="P2">P2</option>
+  </select>
+  <button class="serve" id="startMatchBtn">Start match</button>
+</div>
+
+<div id="tagView" class="view" hidden>
+  <div id="scoreboardSets" class="set-boxes"></div>
+
+  <div id="statusMsg" class="status" hidden></div>
+
+  <div id="confirmPanel" class="confirm" hidden>
+    <p id="confirmMessage"></p>
+    <div class="row">
+      <button class="danger" id="confirmYesBtn">Yes</button>
+      <button class="secondary" id="confirmNoBtn">No</button>
+    </div>
+  </div>
+
+  <div id="csvTextPanel" class="confirm" hidden>
+    <p>Direct download isn't available here. Tap Copy, then paste the data into Notes, Files, or an email — or select the text below manually.</p>
+    <textarea id="csvTextArea" readonly rows="10"></textarea>
+    <div class="row">
+      <button class="serve" id="csvTextCopyBtn">Copy</button>
+      <button class="secondary" id="csvTextCloseBtn">Close</button>
+    </div>
+  </div>
+
+  <div id="serverPicker" hidden>
+    <label>Who is serving?</label>
+    <div class="row">
+      <button class="tag" id="pickServeP1Btn">P1</button>
+      <button class="tag" id="pickServeP2Btn">P2</button>
+    </div>
+  </div>
+  <button class="serve" id="serveBtn">Serve</button>
+
+  <div id="tagPanel" hidden>
+    <label>Who hits the last shot?</label>
+    <div class="row">
+      <button class="tag" id="hitP1Btn">P1</button>
+      <button class="tag" id="hitP2Btn">P2</button>
+    </div>
+    <label>Zone</label>
+    <div class="grid" id="zoneGrid"></div>
+    <label>Shot type (multi-select)</label>
+    <div class="grid" id="shotTypeGrid"></div>
+    <label>Result</label>
+    <div class="grid" id="resultGrid"></div>
+    <div class="row">
+      <button class="tag" id="moneyBallBtn">Money ball</button>
+    </div>
+    <div class="row">
+      <button class="tag positive" id="highlightPositiveBtn">Positive highlight</button>
+      <button class="tag negative" id="highlightNegativeBtn">Negative highlight</button>
+    </div>
+    <button class="serve" id="confirmShotBtn">Confirm</button>
+  </div>
+
+  <div class="row">
+    <button class="danger" id="undoBtn">Undo</button>
+    <button class="secondary" id="endSetBtn">End set</button>
+    <button class="secondary" id="endMatchBtn">End match</button>
+    <button class="secondary" id="settingsBtn">Settings</button>
+    <button class="secondary" id="exportBtn">Export CSV</button>
+    <button class="secondary" id="newMatchBtn">New match</button>
+  </div>
+</div>
+
+<div id="settingsView" class="view" hidden>
+  <h2>Taxonomy settings</h2>
+  <label>Zones (comma-separated)</label>
+  <input id="zonesInput" type="text" />
+  <label>Shot types (comma-separated)</label>
+  <input id="shotTypesInput" type="text" />
+  <label>Results (comma-separated)</label>
+  <input id="resultsInput" type="text" />
+  <button class="serve" id="saveSettingsBtn">Save</button>
+  <button class="secondary" id="backFromSettingsBtn">Back to tagging</button>
+</div>
+
+<script>
+  const VERSION = 1;
+
+  function makeEmptySet(setNumber) {
+    return {
+      setNumber,
+      scoreP1: 0,
+      scoreP2: 0,
+      startTimestampSec: null,
+      endTimestampSec: null,
+      events: [],
+      pendingRally: null,
+      nextServer: null,
+      winner: null,
+    };
+  }
+
+  function createMatchState({ player1, player2, tournament, setsToWin }) {
+    return {
+      player1,
+      player2,
+      tournament,
+      setsToWin,
+      sets: [makeEmptySet(1)],
+      currentSetIndex: 0,
+      matchStartTimestampSec: null,
+      matchEndTimestampSec: null,
+      matchWinner: null,
+    };
+  }
+
+  function currentSet(state) {
+    return state.sets[state.currentSetIndex];
+  }
+
+  function tagServe(state, { timestampSec, server }) {
+    const set = currentSet(state);
+    if (set.pendingRally) {
+      throw new Error('Rally already in progress — tag a result before serving again');
+    }
+    const actualServer = set.nextServer || server;
+    if (!actualServer) {
+      throw new Error('First serve of the set requires an explicit server');
+    }
+    if (set.startTimestampSec === null) {
+      set.startTimestampSec = timestampSec;
+    }
+    if (state.matchStartTimestampSec === null) {
+      state.matchStartTimestampSec = timestampSec;
+    }
+    const rallyId = set.events.filter((e) => e.type === 'serve').length + 1;
+    set.pendingRally = { rallyId, serveTimestampSec: timestampSec, server: actualServer };
+    set.events.push({
+      id: set.events.length + 1,
+      type: 'serve',
+      setNumber: set.setNumber,
+      rallyId,
+      timestampSec,
+      hittingPlayer: actualServer,
+      zone: null,
+      shotTypes: ['serve'],
+      result: null,
+      scoreP1: set.scoreP1,
+      scoreP2: set.scoreP2,
+    });
+    return state;
+  }
+
+  const OPPONENT = { P1: 'P2', P2: 'P1' };
+  // 'stroke' = the referee awards a stroke against the hitting player for an
+  // infraction (e.g. obstruction they caused) — the point goes to the opponent,
+  // same as an error, even though it isn't a mis-hit.
+  const ERROR_RESULTS = new Set(['unforced_error', 'forced_error', 'stroke']);
+
+  function tagRallyEnd(state, { hittingPlayer, zone, shotTypes, result, moneyBall = false, highlight = null, timestampSec }) {
+    const set = currentSet(state);
+    if (!set.pendingRally) {
+      throw new Error('No rally in progress — tag Serve first');
+    }
+    // 'let' replays the rally: no one scores, the same player serves again.
+    const isLet = result === 'let';
+    let pointWinner = null;
+    if (!isLet) {
+      pointWinner = ERROR_RESULTS.has(result) ? OPPONENT[hittingPlayer] : hittingPlayer;
+      if (pointWinner === 'P1') {
+        set.scoreP1 += 1;
+      } else {
+        set.scoreP2 += 1;
+      }
+    }
+
+    set.events.push({
+      id: set.events.length + 1,
+      type: 'shot',
+      setNumber: set.setNumber,
+      rallyId: set.pendingRally.rallyId,
+      timestampSec,
+      hittingPlayer,
+      zone,
+      shotTypes,
+      result,
+      // 'money ball' marks the rally as important (e.g. game/match ball) —
+      // it never decides who scores, just tags significance onto whatever
+      // result already happened.
+      moneyBall: !!moneyBall,
+      // marks the rally for later video pairing — 'positive'/'negative'/null,
+      // purely descriptive, never affects scoring.
+      highlight: highlight === 'positive' || highlight === 'negative' ? highlight : null,
+      scoreP1: set.scoreP1,
+      scoreP2: set.scoreP2,
+    });
+
+    set.nextServer = isLet ? set.pendingRally.server : pointWinner;
+    set.pendingRally = null;
+    return state;
+  }
+
+  function findServeEvent(set, rallyId) {
+    return set.events.find((e) => e.type === 'serve' && e.rallyId === rallyId);
+  }
+
+  function undoLastEvent(state) {
+    const set = currentSet(state);
+    if (set.events.length === 0) {
+      throw new Error('Nothing to undo');
+    }
+    const last = set.events.pop();
+
+    if (last.type === 'shot') {
+      if (last.result !== 'let') {
+        const wasError = ERROR_RESULTS.has(last.result);
+        const winner = wasError ? OPPONENT[last.hittingPlayer] : last.hittingPlayer;
+        if (winner === 'P1') {
+          set.scoreP1 -= 1;
+        } else {
+          set.scoreP2 -= 1;
+        }
+      }
+      const serveEvent = findServeEvent(set, last.rallyId);
+      set.pendingRally = { rallyId: last.rallyId, serveTimestampSec: serveEvent.timestampSec, server: serveEvent.hittingPlayer };
+      set.nextServer = null;
+    } else if (last.type === 'serve') {
+      set.pendingRally = null;
+      if (set.events.length === 0) {
+        set.startTimestampSec = null;
+      }
+    }
+    return state;
+  }
+
+  function isSetOver(set) {
+    return (set.scoreP1 >= 11 || set.scoreP2 >= 11) && Math.abs(set.scoreP1 - set.scoreP2) >= 2;
+  }
+
+  function endSet(state, { timestampSec }) {
+    const set = currentSet(state);
+    if (set.pendingRally) {
+      throw new Error('Cannot end set with a rally in progress');
+    }
+    set.endTimestampSec = timestampSec;
+    set.winner = set.scoreP1 > set.scoreP2 ? 'P1' : 'P2';
+
+    const setsWonP1 = state.sets.filter((s) => s.winner === 'P1').length;
+    const setsWonP2 = state.sets.filter((s) => s.winner === 'P2').length;
+
+    if (setsWonP1 >= state.setsToWin || setsWonP2 >= state.setsToWin) {
+      state.matchWinner = setsWonP1 >= state.setsToWin ? 'P1' : 'P2';
+    } else {
+      // Squash rule: the winner of a set serves first in the next one.
+      const nextSet = makeEmptySet(set.setNumber + 1);
+      nextSet.nextServer = set.winner;
+      state.sets.push(nextSet);
+      state.currentSetIndex += 1;
+    }
+    return state;
+  }
+
+  function endMatch(state, { timestampSec }) {
+    state.matchEndTimestampSec = timestampSec;
+    return state;
+  }
+
+  const CSV_HEADER = ['match_date', 'player1', 'player2', 'set_number', 'rally_id', 'timestamp_sec', 'hitting_player', 'zone', 'shot_types', 'result', 'money_ball', 'highlight', 'score_p1', 'score_p2'];
+
+  function csvEscape(value) {
+    const str = String(value);
+    if (/[",\n]/.test(str)) {
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+    return str;
+  }
+
+  function toCSV(state, { matchDate }) {
+    const rows = [CSV_HEADER.join(',')];
+    for (const set of state.sets) {
+      for (const e of set.events) {
+        rows.push([
+          matchDate,
+          csvEscape(state.player1),
+          csvEscape(state.player2),
+          e.setNumber,
+          e.rallyId,
+          Math.round((e.timestampSec - set.startTimestampSec) * 1000) / 1000,
+          e.hittingPlayer,
+          e.zone ?? '',
+          e.shotTypes.join(';'),
+          e.result ?? '',
+          e.moneyBall ?? '',
+          e.highlight ?? '',
+          e.scoreP1,
+          e.scoreP2,
+        ].join(','));
+      }
+      if (set.endTimestampSec != null) {
+        rows.push([
+          matchDate,
+          csvEscape(state.player1),
+          csvEscape(state.player2),
+          set.setNumber,
+          0,
+          Math.round((set.endTimestampSec - set.startTimestampSec) * 1000) / 1000,
+          '',
+          '',
+          '',
+          'set_end',
+          '',
+          '',
+          set.scoreP1,
+          set.scoreP2,
+        ].join(','));
+      }
+    }
+    if (state.matchEndTimestampSec != null) {
+      const setsWonP1 = state.sets.filter((s) => s.winner === 'P1').length;
+      const setsWonP2 = state.sets.filter((s) => s.winner === 'P2').length;
+      rows.push([
+        matchDate,
+        csvEscape(state.player1),
+        csvEscape(state.player2),
+        0,
+        0,
+        Math.round((state.matchEndTimestampSec - state.matchStartTimestampSec) * 1000) / 1000,
+        '',
+        '',
+        '',
+        'match_end',
+        '',
+        '',
+        setsWonP1,
+        setsWonP2,
+      ].join(','));
+    }
+    return rows.join('\n');
+  }
+
+  const DEFAULT_TAXONOMY = {
+    zones: ['left_front', 'right_front', 'left_back', 'right_back', 'left_mid', 'right_mid', 't'],
+    shotTypes: ['straight', 'cross', 'drop_shot', 'lob', 'kill', 'boast_2w', 'boast_3w', 't_boast', 'volley', 'flick', 'serve'],
+    results: ['winner', 'unforced_error', 'forced_error', 'stroke', 'let'],
+  };
+
+  function updateTaxonomy(taxonomy, changes) {
+    return {
+      zones: changes.zones ?? taxonomy.zones,
+      shotTypes: changes.shotTypes ?? taxonomy.shotTypes,
+      results: changes.results ?? taxonomy.results,
+    };
+  }
+
+  // --- persistence ---
+  const STORAGE_KEY = 'squash-tagger-state-v1';
+  const TAXONOMY_KEY = 'squash-tagger-taxonomy-v1';
+
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+  function saveState(state) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      showStatus('Could not save data on this device — the match may not survive closing the app.');
+    }
+  }
+  function loadTaxonomy() {
+    try {
+      const raw = localStorage.getItem(TAXONOMY_KEY);
+      return raw ? JSON.parse(raw) : DEFAULT_TAXONOMY;
+    } catch {
+      return DEFAULT_TAXONOMY;
+    }
+  }
+  function saveTaxonomy(taxonomy) {
+    try {
+      localStorage.setItem(TAXONOMY_KEY, JSON.stringify(taxonomy));
+    } catch {
+      showStatus('Could not save settings on this device.');
+    }
+  }
+
+  let state = loadState();
+  let taxonomy = loadTaxonomy();
+  let selectedHitter = null;
+  let selectedZone = null;
+  let selectedShotTypes = new Set();
+  let selectedResult = null;
+  let selectedMoneyBall = false;
+  let selectedHighlight = null; // null | 'positive' | 'negative'
+
+  const $ = (id) => document.getElementById(id);
+  const nowSec = () => Date.now() / 1000;
+
+  function showView(id) {
+    for (const v of ['setupView', 'tagView', 'settingsView']) $(v).hidden = v !== id;
+  }
+
+  function renderPlayerLabels() {
+    if (!state) return;
+    $('hitP1Btn').textContent = state.player1;
+    $('hitP2Btn').textContent = state.player2;
+    $('pickServeP1Btn').textContent = state.player1;
+    $('pickServeP2Btn').textContent = state.player2;
+  }
+
+  function formatDuration(sec) {
+    const total = Math.max(0, Math.round(sec));
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  function renderScoreboard() {
+    if (!state) return;
+    const activeSetNumber = currentSet(state).setNumber;
+    const container = $('scoreboardSets');
+    container.innerHTML = '';
+    for (const set of state.sets) {
+      const box = document.createElement('div');
+      box.className = 'set-box' + (set.setNumber === activeSetNumber ? ' current' : '');
+
+      const header = document.createElement('div');
+      header.className = 'set-box-header';
+      header.textContent = `Set ${set.setNumber}`;
+
+      const score = document.createElement('div');
+      score.className = 'set-box-score';
+      score.textContent = `${state.player1} ${set.scoreP1}:${set.scoreP2} ${state.player2}`;
+
+      const time = document.createElement('div');
+      time.className = 'set-box-time';
+      time.textContent = set.startTimestampSec != null
+        ? formatDuration((set.endTimestampSec ?? nowSec()) - set.startTimestampSec)
+        : '—';
+
+      box.append(header, score, time);
+      container.appendChild(box);
+    }
+  }
+
+  function renderTagButtons(gridId, values, selectedCheck, onToggle) {
+    const grid = $(gridId);
+    grid.innerHTML = '';
+    for (const value of values) {
+      const btn = document.createElement('button');
+      btn.className = 'tag' + (selectedCheck(value) ? ' selected' : '');
+      btn.textContent = value;
+      btn.onclick = () => { onToggle(value); renderTagPanel(); };
+      grid.appendChild(btn);
+    }
+  }
+
+  // Mirrors the court's real geography (bird's-eye view): front/mid/back
+  // rows, left/right columns, with 't' at the mid-court center. Only
+  // applied when the taxonomy still holds exactly these 7 zones — a
+  // custom zone list (edited in Settings) falls back to a plain
+  // left-to-right grid, since its spatial meaning is unknown.
+  const ZONE_SPATIAL_LAYOUT = ['left_front', null, 'right_front', 'left_mid', 't', 'right_mid', 'left_back', null, 'right_back'];
+
+  function sameZoneSet(zones) {
+    const expected = ZONE_SPATIAL_LAYOUT.filter(Boolean);
+    return zones.length === expected.length && expected.every((z) => zones.includes(z));
+  }
+
+  function renderZoneGrid() {
+    const grid = $('zoneGrid');
+    grid.innerHTML = '';
+    const layout = sameZoneSet(taxonomy.zones) ? ZONE_SPATIAL_LAYOUT : taxonomy.zones;
+    for (const zone of layout) {
+      if (zone === null) {
+        grid.appendChild(document.createElement('div'));
+        continue;
+      }
+      const btn = document.createElement('button');
+      btn.className = 'tag' + (zone === selectedZone ? ' selected' : '');
+      btn.textContent = zone;
+      btn.onclick = () => { selectedZone = zone; renderTagPanel(); };
+      grid.appendChild(btn);
+    }
+  }
+
+  function renderTagPanel() {
+    $('hitP1Btn').className = 'tag' + (selectedHitter === 'P1' ? ' selected' : '');
+    $('hitP2Btn').className = 'tag' + (selectedHitter === 'P2' ? ' selected' : '');
+    renderZoneGrid();
+    renderTagButtons('shotTypeGrid', taxonomy.shotTypes, (v) => selectedShotTypes.has(v), (v) => {
+      selectedShotTypes.has(v) ? selectedShotTypes.delete(v) : selectedShotTypes.add(v);
+    });
+    renderTagButtons('resultGrid', taxonomy.results, (v) => v === selectedResult, (v) => { selectedResult = v; });
+    $('moneyBallBtn').className = 'tag' + (selectedMoneyBall ? ' selected' : '');
+    $('highlightPositiveBtn').className = 'tag positive' + (selectedHighlight === 'positive' ? ' selected' : '');
+    $('highlightNegativeBtn').className = 'tag negative' + (selectedHighlight === 'negative' ? ' selected' : '');
+  }
+
+  function resetTagSelection() {
+    selectedHitter = null; selectedZone = null; selectedShotTypes = new Set(); selectedResult = null; selectedMoneyBall = false; selectedHighlight = null;
+  }
+
+  // Native alert()/confirm() are unreliable inside the published Artifact's
+  // sandboxed viewer (confirm() can return false without ever showing
+  // anything) — these inline replacements are guaranteed to work regardless.
+  function showStatus(message) {
+    $('statusMsg').textContent = message;
+    $('statusMsg').hidden = false;
+  }
+  $('statusMsg').onclick = () => { $('statusMsg').hidden = true; };
+
+  let pendingConfirmAction = null;
+  function showConfirm(message, onYes) {
+    $('confirmMessage').textContent = message;
+    pendingConfirmAction = onYes;
+    $('confirmPanel').hidden = false;
+  }
+  $('confirmYesBtn').onclick = () => {
+    $('confirmPanel').hidden = true;
+    const action = pendingConfirmAction;
+    pendingConfirmAction = null;
+    if (action) action();
+  };
+  $('confirmNoBtn').onclick = () => {
+    $('confirmPanel').hidden = true;
+    pendingConfirmAction = null;
+  };
+
+  $('startMatchBtn').onclick = () => {
+    try {
+      state = createMatchState({
+        player1: $('player1Input').value || 'P1',
+        player2: $('player2Input').value || 'P2',
+        tournament: $('tournamentInput').value,
+        setsToWin: Number($('setsToWinInput').value),
+      });
+      currentSet(state).nextServer = $('firstServerInput').value;
+      saveState(state);
+      $('serveBtn').disabled = false;
+      $('endSetBtn').disabled = false;
+      showView('tagView');
+      renderPlayerLabels();
+      renderScoreboard();
+    } catch (err) {
+      showStatus(err.message);
+    }
+  };
+
+  function doServe(server) {
+    try {
+      tagServe(state, { timestampSec: nowSec(), server });
+      saveState(state);
+      resetTagSelection();
+      $('serverPicker').hidden = true;
+      $('tagPanel').hidden = false;
+      renderTagPanel();
+      renderScoreboard();
+    } catch (err) {
+      showStatus(err.message);
+    }
+  }
+
+  $('serveBtn').onclick = () => {
+    const set = currentSet(state);
+    if (!set.nextServer) {
+      $('serverPicker').hidden = false;
+      return;
+    }
+    doServe(undefined);
+  };
+  $('pickServeP1Btn').onclick = () => doServe('P1');
+  $('pickServeP2Btn').onclick = () => doServe('P2');
+
+  $('hitP1Btn').onclick = () => { selectedHitter = 'P1'; renderTagPanel(); };
+  $('hitP2Btn').onclick = () => { selectedHitter = 'P2'; renderTagPanel(); };
+  $('moneyBallBtn').onclick = () => { selectedMoneyBall = !selectedMoneyBall; renderTagPanel(); };
+  $('highlightPositiveBtn').onclick = () => {
+    selectedHighlight = selectedHighlight === 'positive' ? null : 'positive';
+    renderTagPanel();
+  };
+  $('highlightNegativeBtn').onclick = () => {
+    selectedHighlight = selectedHighlight === 'negative' ? null : 'negative';
+    renderTagPanel();
+  };
+
+  function finishSet(auto) {
+    try {
+      const set = currentSet(state);
+      endSet(state, { timestampSec: nowSec() });
+      saveState(state);
+      renderScoreboard();
+      const label = auto ? 'Set ended automatically' : 'Set ended';
+      if (state.matchWinner) {
+        showStatus(`${label} (${set.scoreP1}:${set.scoreP2}). Match over, winner: ${state.matchWinner === 'P1' ? state.player1 : state.player2}`);
+        $('serveBtn').disabled = true;
+        $('endSetBtn').disabled = true;
+      } else {
+        showStatus(`${label} (${set.scoreP1}:${set.scoreP2}).`);
+      }
+    } catch (err) {
+      showStatus(err.message);
+    }
+  }
+
+  $('confirmShotBtn').onclick = () => {
+    // A let has no meaningful "last shot" (the rally was interrupted) —
+    // only the result is required, hitter/zone/shot type stay optional.
+    if (!selectedResult) {
+      showStatus('Pick a result.');
+      return;
+    }
+    if (selectedResult !== 'let' && (!selectedHitter || !selectedZone || selectedShotTypes.size === 0)) {
+      showStatus('Pick a player, zone, shot type and result.');
+      return;
+    }
+    try {
+      tagRallyEnd(state, {
+        hittingPlayer: selectedHitter,
+        zone: selectedZone,
+        shotTypes: [...selectedShotTypes],
+        result: selectedResult,
+        moneyBall: selectedMoneyBall,
+        highlight: selectedHighlight,
+        timestampSec: nowSec(),
+      });
+      saveState(state);
+      $('tagPanel').hidden = true;
+      renderScoreboard();
+      if (isSetOver(currentSet(state))) {
+        finishSet(true);
+      }
+    } catch (err) {
+      showStatus(err.message);
+    }
+  };
+
+  $('undoBtn').onclick = () => {
+    try {
+      undoLastEvent(state);
+      saveState(state);
+      const stillPending = currentSet(state).pendingRally;
+      $('tagPanel').hidden = !stillPending;
+      if (stillPending) renderTagPanel();
+      renderScoreboard();
+    } catch (err) {
+      showStatus(err.message);
+    }
+  };
+
+  $('endSetBtn').onclick = () => {
+    const set = currentSet(state);
+    if (set.scoreP1 === set.scoreP2) {
+      showStatus('A set cannot end level — check the score.');
+      return;
+    }
+    showConfirm(`End the set (${set.scoreP1}:${set.scoreP2})?`, () => finishSet(false));
+  };
+
+  $('endMatchBtn').onclick = () => {
+    try {
+      endMatch(state, { timestampSec: nowSec() });
+      saveState(state);
+      showStatus('Match ended. Don’t forget to export the CSV.');
+    } catch (err) {
+      showStatus(err.message);
+    }
+  };
+
+  $('newMatchBtn').onclick = () => {
+    const warning = state.matchEndTimestampSec == null
+      ? 'This match hasn’t ended or been exported yet. Really start a new match and discard it?'
+      : 'Did you export the CSV? Starting a new match will erase the current data on this device.';
+    showConfirm(warning, () => {
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch {
+        // ignore — state is cleared in memory below regardless
+      }
+      state = null;
+      $('serverPicker').hidden = true;
+      $('tagPanel').hidden = true;
+      $('statusMsg').hidden = true;
+      $('serveBtn').disabled = false;
+      $('endSetBtn').disabled = false;
+      showView('setupView');
+    });
+  };
+
+  // Fallback when the platform's `downloads` capability isn't available to
+  // this viewer (observed: unavailable even for a signed-in collaborator
+  // with edit access on a shared Artifact link, not just anonymous viewers
+  // — so this can't be gated behind a permission check, it has to always
+  // be the guaranteed path). Shows the CSV as selectable text so the coach
+  // can copy it out manually regardless of sign-in state or platform quirks.
+  function showCsvTextFallback(csv, filename) {
+    $('csvTextArea').value = csv;
+    $('csvTextPanel').hidden = false;
+    $('csvTextArea').focus();
+    $('csvTextArea').select();
+    showStatus(`Couldn't download ${filename} directly — copy the text below instead.`);
+  }
+  $('csvTextCloseBtn').onclick = () => { $('csvTextPanel').hidden = true; };
+  $('csvTextCopyBtn').onclick = async () => {
+    const text = $('csvTextArea').value;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        showStatus('Copied — paste it into Notes, Files, or an email.');
+        return;
+      }
+      throw new Error('no clipboard API');
+    } catch {
+      // Clipboard API blocked (e.g. sandboxed iframe) — fall back to the
+      // manual select, which still works via the OS's own copy gesture.
+      $('csvTextArea').focus();
+      $('csvTextArea').select();
+      showStatus('Auto-copy is unavailable here — the text is selected, use your device’s copy instead.');
+    }
+  };
+
+  $('exportBtn').onclick = async () => {
+    const matchDate = new Date(state.matchStartTimestampSec * 1000).toISOString().slice(0, 10);
+    const csv = toCSV(state, { matchDate });
+    const filename = `${state.player1}-vs-${state.player2}-${matchDate}.csv`;
+    // Published as a Claude Artifact, a plain `<a download>` click is inert
+    // for viewers — the platform's `downloads` capability is the only way
+    // to hand a viewer a file there, and it isn't guaranteed to be granted.
+    // Opened as a bare local file (no window.claude), fall back to the
+    // direct download so the manual local-browser test still works.
+    if (window.claude && window.claude.use) {
+      try {
+        const downloads = await window.claude.use('downloads');
+        if (downloads) {
+          const result = await downloads.save({ filename, data: csv });
+          showStatus(result.status === 'delivered'
+            ? `File ${filename} sent.`
+            : `File ${filename} saved — check Files → Browse → Downloads.`);
+          return;
+        }
+        showCsvTextFallback(csv, filename);
+        return;
+      } catch (err) {
+        if (err && err.code === 'declined') {
+          showStatus('Export cancelled — file was not saved.');
+        } else {
+          showCsvTextFallback(csv, filename);
+        }
+        return;
+      }
+    }
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  $('settingsBtn').onclick = () => {
+    $('zonesInput').value = taxonomy.zones.join(',');
+    $('shotTypesInput').value = taxonomy.shotTypes.join(',');
+    $('resultsInput').value = taxonomy.results.join(',');
+    showView('settingsView');
+  };
+  $('backFromSettingsBtn').onclick = () => showView('tagView');
+  $('saveSettingsBtn').onclick = () => {
+    taxonomy = updateTaxonomy(taxonomy, {
+      zones: $('zonesInput').value.split(',').map((s) => s.trim()).filter(Boolean),
+      shotTypes: $('shotTypesInput').value.split(',').map((s) => s.trim()).filter(Boolean),
+      results: $('resultsInput').value.split(',').map((s) => s.trim()).filter(Boolean),
+    });
+    saveTaxonomy(taxonomy);
+    showView('tagView');
+  };
+
+  // Resume an in-progress match on reload
+  if (state) {
+    showView('tagView');
+    renderPlayerLabels();
+    if (currentSet(state).pendingRally) {
+      $('tagPanel').hidden = false;
+      renderTagPanel();
+    }
+    if (state.matchWinner) {
+      $('serveBtn').disabled = true;
+      $('endSetBtn').disabled = true;
+    }
+    renderScoreboard();
+  } else {
+    showView('setupView');
+  }
+  setInterval(renderScoreboard, 1000);
+</script>
+</body>
+</html>
