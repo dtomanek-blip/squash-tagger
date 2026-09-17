@@ -23,11 +23,13 @@
   body { background: var(--bg); color: var(--text); font-family: -apple-system, system-ui, sans-serif; margin: 0; }
   .view { padding: 12px; max-width: 900px; margin: 0 auto; }
   .set-boxes { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
-  .set-box { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px 16px; display: flex; align-items: center; gap: 12px; }
+  .set-box { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px 16px; display: flex; flex-direction: column; gap: 4px; }
   .set-box.current { box-shadow: 0 0 0 2px var(--accent) inset; }
+  .set-box-top { display: flex; align-items: center; gap: 12px; }
   .set-box-header { color: var(--muted); font-size: 0.8rem; min-width: 44px; }
   .set-box-score { flex: 1; font-size: 1.1rem; text-align: center; }
   .set-box-time { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 44px; text-align: right; }
+  .set-box-stats { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--muted); }
   .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
   button.tag { padding: 16px 8px; border-radius: 10px; border: 1px solid var(--border); background: var(--panel); color: var(--text); font-size: 0.95rem; }
   .row button.tag { flex: 1; }
@@ -475,31 +477,80 @@
     return `${m}:${String(s).padStart(2, '0')}`;
   }
 
+  // Winner/error counts, tallied fresh from events every render (not
+  // stored state) so Undo stays correct for free — no separate
+  // increment/decrement logic to keep in sync with the score.
+  function tallyWinnersErrors(events) {
+    const tally = { P1: { winners: 0, errors: 0 }, P2: { winners: 0, errors: 0 } };
+    for (const e of events) {
+      if (e.type !== 'shot') continue;
+      if (e.result === 'winner') tally[e.hittingPlayer].winners += 1;
+      else if (ERROR_RESULTS.has(e.result)) tally[e.hittingPlayer].errors += 1;
+    }
+    return tally;
+  }
+
+  function makeSetBox({ headerText, scoreText, timeText, tally, current }) {
+    const box = document.createElement('div');
+    box.className = 'set-box' + (current ? ' current' : '');
+
+    const top = document.createElement('div');
+    top.className = 'set-box-top';
+
+    const header = document.createElement('div');
+    header.className = 'set-box-header';
+    header.textContent = headerText;
+
+    const score = document.createElement('div');
+    score.className = 'set-box-score';
+    score.textContent = scoreText;
+
+    const time = document.createElement('div');
+    time.className = 'set-box-time';
+    time.textContent = timeText;
+
+    top.append(header, score, time);
+
+    const stats = document.createElement('div');
+    stats.className = 'set-box-stats';
+    const p1Stats = document.createElement('span');
+    p1Stats.textContent = `W ${tally.P1.winners} · E ${tally.P1.errors}`;
+    const p2Stats = document.createElement('span');
+    p2Stats.textContent = `W ${tally.P2.winners} · E ${tally.P2.errors}`;
+    stats.append(p1Stats, p2Stats);
+
+    box.append(top, stats);
+    return box;
+  }
+
   function renderScoreboard() {
     if (!state) return;
     const activeSetNumber = currentSet(state).setNumber;
     const container = $('scoreboardSets');
     container.innerHTML = '';
     for (const set of state.sets) {
-      const box = document.createElement('div');
-      box.className = 'set-box' + (set.setNumber === activeSetNumber ? ' current' : '');
+      container.appendChild(makeSetBox({
+        headerText: `Set ${set.setNumber}`,
+        scoreText: `${state.player1} ${set.scoreP1}:${set.scoreP2} ${state.player2}`,
+        timeText: set.startTimestampSec != null
+          ? formatDuration((set.endTimestampSec ?? nowSec()) - set.startTimestampSec)
+          : '—',
+        tally: tallyWinnersErrors(set.events),
+        current: set.setNumber === activeSetNumber,
+      }));
+    }
 
-      const header = document.createElement('div');
-      header.className = 'set-box-header';
-      header.textContent = `Set ${set.setNumber}`;
-
-      const score = document.createElement('div');
-      score.className = 'set-box-score';
-      score.textContent = `${state.player1} ${set.scoreP1}:${set.scoreP2} ${state.player2}`;
-
-      const time = document.createElement('div');
-      time.className = 'set-box-time';
-      time.textContent = set.startTimestampSec != null
-        ? formatDuration((set.endTimestampSec ?? nowSec()) - set.startTimestampSec)
-        : '—';
-
-      box.append(header, score, time);
-      container.appendChild(box);
+    if (state.matchEndTimestampSec != null) {
+      const setsWonP1 = state.sets.filter((s) => s.winner === 'P1').length;
+      const setsWonP2 = state.sets.filter((s) => s.winner === 'P2').length;
+      const allEvents = state.sets.flatMap((s) => s.events);
+      container.appendChild(makeSetBox({
+        headerText: 'Total',
+        scoreText: `${state.player1} ${setsWonP1}:${setsWonP2} ${state.player2}`,
+        timeText: formatDuration(state.matchEndTimestampSec - state.matchStartTimestampSec),
+        tally: tallyWinnersErrors(allEvents),
+        current: false,
+      }));
     }
   }
 
