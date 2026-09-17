@@ -320,6 +320,14 @@
   }
 
   function endMatch(state, { timestampSec }) {
+    // A coach can end the match directly (e.g. injury retirement) without
+    // formally ending the current set first — freeze that set's clock too,
+    // but only if it actually started (an unstarted set has no events and
+    // must stay endTimestampSec=null, or toCSV's duration math goes NaN).
+    const set = currentSet(state);
+    if (set.startTimestampSec != null && set.endTimestampSec == null) {
+      set.endTimestampSec = timestampSec;
+    }
     state.matchEndTimestampSec = timestampSec;
     return state;
   }
