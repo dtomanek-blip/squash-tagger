@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <body>
 <title>Squash Tagger</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.2/jszip.min.js"></script>
 <style>
   :root {
     --bg: #f7f7f5; --panel: #ffffff; --text: #1a1a1a; --muted: #6b6b6b;
@@ -128,6 +129,37 @@
     <button class="secondary" id="exportBtn">Export CSV</button>
     <button class="secondary" id="newMatchBtn">New match</button>
   </div>
+
+  <div class="row">
+    <button class="secondary" id="addNoteBtn">Add note</button>
+  </div>
+
+  <div id="notePanel" hidden>
+    <label>About</label>
+    <div class="row">
+      <button class="tag" id="noteSideP1Btn">P1</button>
+      <button class="tag" id="noteSideP2Btn">P2</button>
+      <button class="tag" id="noteSideGeneralBtn">General</button>
+    </div>
+    <label>Type</label>
+    <div class="row">
+      <button class="tag" id="noteModeTextBtn">Write</button>
+      <button class="tag" id="noteModeAudioBtn">Record</button>
+    </div>
+    <div id="noteTextArea" hidden>
+      <textarea id="noteTextInput" rows="4"></textarea>
+    </div>
+    <div id="noteAudioArea" hidden>
+      <button class="serve" id="noteRecordToggleBtn">Start recording</button>
+      <p id="noteRecordStatus" class="status" hidden></p>
+    </div>
+    <div class="row">
+      <button class="serve" id="noteSaveBtn">Save note</button>
+      <button class="secondary" id="noteCancelBtn">Cancel</button>
+    </div>
+  </div>
+
+  <div id="notesList"></div>
 </div>
 
 <div id="settingsView" class="view" hidden>
@@ -170,6 +202,7 @@
       matchStartTimestampSec: null,
       matchEndTimestampSec: null,
       matchWinner: null,
+      notes: [],
     };
   }
 
@@ -332,7 +365,33 @@
     return state;
   }
 
-  const CSV_HEADER = ['match_date', 'player1', 'player2', 'set_number', 'rally_id', 'timestamp_sec', 'hitting_player', 'zone', 'shot_types', 'result', 'money_ball', 'highlight', 'score_p1', 'score_p2'];
+  function addTextNote(state, { setNumber, playerSide, text, timestampSec }) {
+    if (!state.notes) state.notes = [];
+    const id = state.notes.reduce((max, n) => Math.max(max, n.id), 0) + 1;
+    state.notes.push({ id, setNumber, playerSide, type: 'text', text, timestampSec });
+    return state;
+  }
+
+  function addAudioNote(state, { setNumber, playerSide, audioBlob, audioMimeType, timestampSec }) {
+    if (!state.notes) state.notes = [];
+    const id = state.notes.reduce((max, n) => Math.max(max, n.id), 0) + 1;
+    state.notes.push({ id, setNumber, playerSide, type: 'audio', audioBlob, audioMimeType, timestampSec });
+    return state;
+  }
+
+  function removeNote(state, noteId) {
+    state.notes = (state.notes || []).filter((n) => n.id !== noteId);
+    return state;
+  }
+
+  const NOTE_AUDIO_EXT = { 'audio/webm': 'webm', 'audio/mp4': 'mp4', 'audio/ogg': 'ogg', 'audio/wav': 'wav', 'audio/mpeg': 'mp3' };
+
+  function noteFilename(note, seq) {
+    const ext = NOTE_AUDIO_EXT[String(note.audioMimeType).split(';')[0].trim()] || 'webm';
+    return `note_set${note.setNumber}_${note.playerSide}_${seq}.${ext}`;
+  }
+
+  const CSV_HEADER = ['match_date', 'player1', 'player2', 'set_number', 'rally_id', 'timestamp_sec', 'hitting_player', 'zone', 'shot_types', 'result', 'money_ball', 'highlight', 'score_p1', 'score_p2', 'note_text'];
 
   function csvEscape(value) {
     const str = String(value);
@@ -361,24 +420,15 @@
           e.highlight ?? '',
           e.scoreP1,
           e.scoreP2,
+          '',
         ].join(','));
       }
       if (set.endTimestampSec != null) {
         rows.push([
-          matchDate,
-          csvEscape(state.player1),
-          csvEscape(state.player2),
-          set.setNumber,
-          0,
+          matchDate, csvEscape(state.player1), csvEscape(state.player2),
+          set.setNumber, 0,
           Math.round((set.endTimestampSec - set.startTimestampSec) * 1000) / 1000,
-          '',
-          '',
-          '',
-          'set_end',
-          '',
-          '',
-          set.scoreP1,
-          set.scoreP2,
+          '', '', '', 'set_end', '', '', set.scoreP1, set.scoreP2, '',
         ].join(','));
       }
     }
@@ -386,20 +436,24 @@
       const setsWonP1 = state.sets.filter((s) => s.winner === 'P1').length;
       const setsWonP2 = state.sets.filter((s) => s.winner === 'P2').length;
       rows.push([
-        matchDate,
-        csvEscape(state.player1),
-        csvEscape(state.player2),
-        0,
-        0,
+        matchDate, csvEscape(state.player1), csvEscape(state.player2),
+        0, 0,
         Math.round((state.matchEndTimestampSec - state.matchStartTimestampSec) * 1000) / 1000,
-        '',
-        '',
-        '',
-        'match_end',
-        '',
-        '',
-        setsWonP1,
-        setsWonP2,
+        '', '', '', 'match_end', '', '', setsWonP1, setsWonP2, '',
+      ].join(','));
+    }
+    for (const note of (state.notes || [])) {
+      if (note.type !== 'text') continue;
+      const setStart = note.setNumber === 0
+        ? state.matchStartTimestampSec
+        : (state.sets.find((s) => s.setNumber === note.setNumber) || {}).startTimestampSec;
+      const relativeTs = setStart != null ? Math.round((note.timestampSec - setStart) * 1000) / 1000 : 0;
+      rows.push([
+        matchDate, csvEscape(state.player1), csvEscape(state.player2),
+        note.setNumber, 0, relativeTs,
+        note.playerSide === 'general' ? '' : note.playerSide,
+        '', '', 'note', '', '', '', '',
+        csvEscape(note.text),
       ].join(','));
     }
     return rows.join('\n');
@@ -426,7 +480,16 @@
   function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      return raw ? JSON.parse(raw) : null;
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (parsed.notes) {
+        const before = parsed.notes.length;
+        parsed.notes = parsed.notes.filter((n) => n.type !== 'audio' || n.audioBlob instanceof Blob);
+        if (parsed.notes.length < before) {
+          setTimeout(() => showStatus('An audio note recorded before the last reload was lost — please re-record if still needed.'), 0);
+        }
+      }
+      return parsed;
     } catch {
       return null;
     }
@@ -462,6 +525,44 @@
   let selectedResult = null;
   let selectedMoneyBall = false;
   let selectedHighlight = null; // null | 'positive' | 'negative'
+  let noteContextSetNumber = 1;
+  let selectedNoteSide = null; // 'P1' | 'P2' | 'general'
+  let selectedNoteMode = null; // 'text' | 'audio'
+
+  let mediaRecorder = null;
+  let recordedChunks = [];
+  let recordedAudioBlob = null;
+  let recordedAudioMimeType = null;
+  let recordingStarting = false;
+
+  function startRecording() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showStatus('Audio recording is not supported in this browser — write the note instead.');
+      return;
+    }
+    recordingStarting = true;
+    navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+      recordingStarting = false;
+      recordedChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+      mediaRecorder.onstop = () => {
+        recordedAudioBlob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
+        recordedAudioMimeType = mediaRecorder.mimeType;
+        stream.getTracks().forEach((t) => t.stop());
+        $('noteRecordToggleBtn').textContent = 'Start recording';
+        $('noteRecordStatus').textContent = 'Recording captured — tap Save note.';
+        $('noteRecordStatus').hidden = false;
+      };
+      mediaRecorder.start();
+      $('noteRecordToggleBtn').textContent = 'Stop recording';
+      $('noteRecordStatus').textContent = 'Recording…';
+      $('noteRecordStatus').hidden = false;
+    }).catch(() => {
+      recordingStarting = false;
+      showStatus('Microphone permission denied — write the note instead.');
+    });
+  }
 
   const $ = (id) => document.getElementById(id);
   const nowSec = () => Date.now() / 1000;
@@ -559,6 +660,36 @@
         tally: tallyWinnersErrors(allEvents),
         current: false,
       }));
+    }
+  }
+
+  function noteLabel(note) {
+    if (note.playerSide === 'P1') return state.player1;
+    if (note.playerSide === 'P2') return state.player2;
+    return 'General';
+  }
+
+  function renderNotesList() {
+    const container = $('notesList');
+    container.innerHTML = '';
+    if (!state || !state.notes) return;
+    for (const note of state.notes) {
+      const row = document.createElement('div');
+      row.className = 'set-box';
+      const label = note.setNumber === 0 ? 'Match' : `Set ${note.setNumber}`;
+      const preview = note.type === 'text' ? note.text : '(audio recording)';
+      const text = document.createElement('div');
+      text.textContent = `${label} · ${noteLabel(note)}: ${preview}`;
+      const del = document.createElement('button');
+      del.className = 'secondary';
+      del.textContent = 'Delete';
+      del.onclick = () => {
+        removeNote(state, note.id);
+        saveState(state);
+        renderNotesList();
+      };
+      row.append(text, del);
+      container.appendChild(row);
     }
   }
 
@@ -707,6 +838,7 @@
     try {
       const set = currentSet(state);
       endSet(state, { timestampSec: nowSec() });
+      noteContextSetNumber = set.setNumber;
       saveState(state);
       renderScoreboard();
       const label = auto ? 'Set ended automatically' : 'Set ended';
@@ -767,6 +899,75 @@
     }
   };
 
+  function renderNotePanelSelection() {
+    $('noteSideP1Btn').className = 'tag' + (selectedNoteSide === 'P1' ? ' selected' : '');
+    $('noteSideP2Btn').className = 'tag' + (selectedNoteSide === 'P2' ? ' selected' : '');
+    $('noteSideGeneralBtn').className = 'tag' + (selectedNoteSide === 'general' ? ' selected' : '');
+    $('noteModeTextBtn').className = 'tag' + (selectedNoteMode === 'text' ? ' selected' : '');
+    $('noteModeAudioBtn').className = 'tag' + (selectedNoteMode === 'audio' ? ' selected' : '');
+  }
+
+  function openNotePanel() {
+    selectedNoteSide = null;
+    selectedNoteMode = null;
+    recordedAudioBlob = null;
+    recordedAudioMimeType = null;
+    $('noteTextInput').value = '';
+    $('noteTextArea').hidden = true;
+    $('noteAudioArea').hidden = true;
+    $('noteRecordStatus').hidden = true;
+    renderNotePanelSelection();
+    $('notePanel').hidden = false;
+  }
+
+  $('addNoteBtn').onclick = openNotePanel;
+  $('noteSideP1Btn').onclick = () => { selectedNoteSide = 'P1'; renderNotePanelSelection(); };
+  $('noteSideP2Btn').onclick = () => { selectedNoteSide = 'P2'; renderNotePanelSelection(); };
+  $('noteSideGeneralBtn').onclick = () => { selectedNoteSide = 'general'; renderNotePanelSelection(); };
+  $('noteModeTextBtn').onclick = () => {
+    selectedNoteMode = 'text';
+    $('noteTextArea').hidden = false;
+    $('noteAudioArea').hidden = true;
+    renderNotePanelSelection();
+  };
+  $('noteModeAudioBtn').onclick = () => {
+    selectedNoteMode = 'audio';
+    $('noteTextArea').hidden = true;
+    $('noteAudioArea').hidden = false;
+    renderNotePanelSelection();
+  };
+  $('noteRecordToggleBtn').onclick = () => {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+      return;
+    }
+    if (recordingStarting) return; // a start is already in flight — ignore the double tap
+    recordedAudioBlob = null;
+    recordedAudioMimeType = null;
+    startRecording();
+  };
+
+  $('noteCancelBtn').onclick = () => {
+    if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+    $('notePanel').hidden = true;
+  };
+
+  $('noteSaveBtn').onclick = () => {
+    if (!selectedNoteSide) { showStatus('Pick who the note is about.'); return; }
+    if (!selectedNoteMode) { showStatus('Pick Write or Record.'); return; }
+    if (selectedNoteMode === 'text') {
+      const text = $('noteTextInput').value.trim();
+      if (!text) { showStatus('Write something first.'); return; }
+      addTextNote(state, { setNumber: noteContextSetNumber, playerSide: selectedNoteSide, text, timestampSec: nowSec() });
+    } else {
+      if (!recordedAudioBlob) { showStatus('Record something first.'); return; }
+      addAudioNote(state, { setNumber: noteContextSetNumber, playerSide: selectedNoteSide, audioBlob: recordedAudioBlob, audioMimeType: recordedAudioMimeType, timestampSec: nowSec() });
+    }
+    saveState(state);
+    renderNotesList();
+    $('notePanel').hidden = true;
+  };
+
   $('endSetBtn').onclick = () => {
     const set = currentSet(state);
     if (set.scoreP1 === set.scoreP2) {
@@ -779,8 +980,9 @@
   $('endMatchBtn').onclick = () => {
     try {
       endMatch(state, { timestampSec: nowSec() });
+      noteContextSetNumber = 0;
       saveState(state);
-      showStatus('Match ended. Don’t forget to export the CSV.');
+      showStatus('Match ended. Don\'t forget to export the CSV.');
     } catch (err) {
       showStatus(err.message);
     }
@@ -797,8 +999,11 @@
         // ignore — state is cleared in memory below regardless
       }
       state = null;
+      noteContextSetNumber = 1;
       $('serverPicker').hidden = true;
       $('tagPanel').hidden = true;
+      $('notePanel').hidden = true;
+      $('notesList').innerHTML = '';
       $('statusMsg').hidden = true;
       $('serveBtn').disabled = false;
       $('endSetBtn').disabled = false;
@@ -838,10 +1043,44 @@
     }
   };
 
+  async function buildExportPayload(matchState, matchDate) {
+    const csv = toCSV(matchState, { matchDate });
+    const audioNotes = (matchState.notes || []).filter((n) => n.type === 'audio' && n.audioBlob instanceof Blob);
+    if (audioNotes.length === 0) {
+      return { kind: 'csv', data: csv, filename: `${matchState.player1}-vs-${matchState.player2}-${matchDate}.csv` };
+    }
+    const zip = new JSZip();
+    zip.file('match.csv', csv);
+    let seq = 1;
+    for (const note of audioNotes) {
+      zip.file(noteFilename(note, seq), note.audioBlob);
+      seq += 1;
+    }
+    const blob = await zip.generateAsync({ type: 'blob' });
+    return { kind: 'zip', data: blob, filename: `${matchState.player1}-vs-${matchState.player2}-${matchDate}.zip` };
+  }
+
   $('exportBtn').onclick = async () => {
     const matchDate = new Date(state.matchStartTimestampSec * 1000).toISOString().slice(0, 10);
-    const csv = toCSV(state, { matchDate });
-    const filename = `${state.player1}-vs-${state.player2}-${matchDate}.csv`;
+    const payload = await buildExportPayload(state, matchDate);
+    if (payload.kind === 'zip') {
+      // Audio notes are only ever bundled as a real file download — the
+      // platform `downloads` capability's text fallback (showCsvTextFallback)
+      // has no equivalent for a binary zip, and getUserMedia/MediaRecorder
+      // typically aren't usable inside the sandboxed Artifact viewer anyway
+      // — this path is expected to run from a normal browser tab (GitHub
+      // Pages), where a direct blob download just works.
+      const url = URL.createObjectURL(payload.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = payload.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      showStatus(`Downloaded ${payload.filename} (CSV + audio notes).`);
+      return;
+    }
+    const csv = payload.data;
+    const filename = payload.filename;
     // Published as a Claude Artifact, a plain `<a download>` click is inert
     // for viewers — the platform's `downloads` capability is the only way
     // to hand a viewer a file there, and it isn't guaranteed to be granted.
@@ -907,6 +1146,7 @@
       $('endSetBtn').disabled = true;
     }
     renderScoreboard();
+    renderNotesList();
   } else {
     showView('setupView');
   }
