@@ -391,7 +391,7 @@
     return `note_set${note.setNumber}_${note.playerSide}_${seq}.${ext}`;
   }
 
-  const CSV_HEADER = ['match_date', 'player1', 'player2', 'set_number', 'rally_id', 'timestamp_sec', 'hitting_player', 'zone', 'shot_types', 'result', 'money_ball', 'highlight', 'score_p1', 'score_p2', 'note_text'];
+  const CSV_HEADER = ['match_date', 'player1', 'player2', 'set_number', 'rally_id', 'timestamp_sec', 'hitting_player', 'zone', 'shot_types', 'result', 'money_ball', 'highlight', 'score_p1', 'score_p2', 'note_text', 'match_timestamp_sec'];
 
   function csvEscape(value) {
     const str = String(value);
@@ -421,6 +421,7 @@
           e.scoreP1,
           e.scoreP2,
           '',
+          Math.round((e.timestampSec - state.matchStartTimestampSec) * 1000) / 1000,
         ].join(','));
       }
       if (set.endTimestampSec != null) {
@@ -429,17 +430,19 @@
           set.setNumber, 0,
           Math.round((set.endTimestampSec - set.startTimestampSec) * 1000) / 1000,
           '', '', '', 'set_end', '', '', set.scoreP1, set.scoreP2, '',
+          Math.round((set.endTimestampSec - state.matchStartTimestampSec) * 1000) / 1000,
         ].join(','));
       }
     }
     if (state.matchEndTimestampSec != null) {
       const setsWonP1 = state.sets.filter((s) => s.winner === 'P1').length;
       const setsWonP2 = state.sets.filter((s) => s.winner === 'P2').length;
+      const matchRelSec = Math.round((state.matchEndTimestampSec - state.matchStartTimestampSec) * 1000) / 1000;
       rows.push([
         matchDate, csvEscape(state.player1), csvEscape(state.player2),
-        0, 0,
-        Math.round((state.matchEndTimestampSec - state.matchStartTimestampSec) * 1000) / 1000,
+        0, 0, matchRelSec,
         '', '', '', 'match_end', '', '', setsWonP1, setsWonP2, '',
+        matchRelSec,
       ].join(','));
     }
     for (const note of (state.notes || [])) {
@@ -448,12 +451,16 @@
         ? state.matchStartTimestampSec
         : (state.sets.find((s) => s.setNumber === note.setNumber) || {}).startTimestampSec;
       const relativeTs = setStart != null ? Math.round((note.timestampSec - setStart) * 1000) / 1000 : 0;
+      const matchRelTs = state.matchStartTimestampSec != null
+        ? Math.round((note.timestampSec - state.matchStartTimestampSec) * 1000) / 1000
+        : '';
       rows.push([
         matchDate, csvEscape(state.player1), csvEscape(state.player2),
         note.setNumber, 0, relativeTs,
         note.playerSide === 'general' ? '' : note.playerSide,
         '', '', 'note', '', '', '', '',
         csvEscape(note.text),
+        matchRelTs,
       ].join(','));
     }
     return rows.join('\n');
